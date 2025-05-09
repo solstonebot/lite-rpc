@@ -7,9 +7,9 @@ use itertools::Itertools;
 use lite_rpc::bridge::LiteBridge;
 use lite_rpc::bridge_pubsub::LitePubSubBridge;
 use lite_rpc::cli::Config;
-use lite_rpc::postgres_logger::PostgresLogger;
 use lite_rpc::service_spawner::ServiceSpawner;
 use lite_rpc::start_server::start_servers;
+use lite_rpc::sync_service::SyncService;
 use lite_rpc::DEFAULT_MAX_NUMBER_OF_TXS_IN_QUEUE;
 use log::info;
 use solana_lite_rpc_accounts::account_service::AccountService;
@@ -46,7 +46,6 @@ use solana_lite_rpc_core::structures::{
 use solana_lite_rpc_core::traits::address_lookup_table_interface::AddressLookupTableInterface;
 use solana_lite_rpc_core::types::BlockStream;
 use solana_lite_rpc_core::utils::wait_till_block_of_commitment_is_recieved;
-use solana_lite_rpc_core::AnyhowJoinHandle;
 use solana_lite_rpc_prioritization_fees::account_prio_service::AccountPrioService;
 use solana_lite_rpc_services::data_caching_service::DataCachingService;
 use solana_lite_rpc_services::tpu_utils::tpu_connection_path::TpuConnectionPath;
@@ -77,23 +76,21 @@ static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 pub async fn start_postgres(
     config: Option<postgres_logger::PostgresSessionConfig>,
-) -> anyhow::Result<(Option<NotificationSender>, AnyhowJoinHandle)> {
+) -> anyhow::Result<(Option<NotificationSender>, Option<postgres_logger::PostgresSessionCache>)> {
     let Some(config) = config else {
         return Ok((
             None,
-            tokio::spawn(async {
-                std::future::pending::<()>().await;
-                unreachable!()
-            }),
+            None,
         ));
     };
 
-    let (postgres_send, postgres_recv) = mpsc::unbounded_channel();
+    let (postgres_send, _) = mpsc::unbounded_channel();
 
     let postgres_session_cache = postgres_logger::PostgresSessionCache::new(config).await?;
-    let postgres = PostgresLogger::start(postgres_session_cache, postgres_recv);
+    // let postgres = PostgresLogger::start(postgres_session_cache.clone(), postgres_recv);
+    let _ = SyncService::start(postgres_session_cache.get_session().await?).await?;
 
-    Ok((Some(postgres_send), postgres))
+    Ok((Some(postgres_send), Some(postgres_session_cache)))
 }
 
 pub async fn start_lite_rpc(args: Config, rpc_client: Arc<RpcClient>) -> anyhow::Result<()> {
@@ -302,7 +299,8 @@ pub async fn start_lite_rpc(args: Config, rpc_client: Arc<RpcClient>) -> anyhow:
             address_lookup_tables,
         );
 
-    let (notification_channel, postgres) = start_postgres(postgres).await?;
+    let (notification_channel, postgres_session_cache) = start_postgres(postgres).await?;
+    let postgres = postgres_session_cache.unwrap().get_session().await?.client;
 
     let tpu_config = TpuServiceConfig {
         fanout_slots: fanout_size,
@@ -334,6 +332,7 @@ pub async fn start_lite_rpc(args: Config, rpc_client: Arc<RpcClient>) -> anyhow:
         notification_channel.clone(),
         maximum_retries_per_tx,
         slot_notifier.resubscribe(),
+        postgres,
     );
 
     let support_service =
@@ -383,9 +382,11 @@ pub async fn start_lite_rpc(args: Config, rpc_client: Arc<RpcClient>) -> anyhow:
         // res = block_priofees_task => {
         //     anyhow::bail!("Prio Fees Service {res:?}")
         // }
+/*
         res = postgres => {
             anyhow::bail!("Postgres service {res:?}");
         }
+ */
         res = futures::future::select_all(data_caching_service) => {
             anyhow::bail!("Data caching service failed {res:?}")
         }

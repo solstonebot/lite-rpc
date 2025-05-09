@@ -14,6 +14,8 @@ use solana_lite_rpc_services::{
     transaction_service::{TransactionService, TransactionServiceBuilder},
     tx_sender::TxSender,
 };
+use tokio_postgres::Client;
+use std::sync::Arc;
 use std::time::Duration;
 
 pub struct ServiceSpawner {
@@ -72,12 +74,14 @@ impl ServiceSpawner {
         notifier: Option<NotificationSender>,
         max_retries: usize,
         slot_notifications: SlotStream,
+        postgres: Arc<Client>,
     ) -> (TransactionService, AnyhowJoinHandle) {
         let service_builder = TransactionServiceBuilder::new(
             tx_sender,
             tx_replayer,
             tpu_service,
             max_nb_txs_in_queue,
+            postgres
         );
         service_builder.start(
             notifier,
