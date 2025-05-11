@@ -86,7 +86,8 @@ impl SyncService {
                   INSERT INTO lite_rpc.StakeInfoAccounts
                   (pubkey, start_count_date, stop_count_date, spent_charges, saved_charges, last_charge_date, restorable_charges, amount, stake_quantity)
                   VALUES {}
-                  ON CONFLICT (pubkey) DO UPDATE SET
+                  ON CONFLICT (pubkey) DO
+                  UPDATE SET
                   start_count_date = EXCLUDED.start_count_date,
                   stop_count_date = EXCLUDED.stop_count_date,
                   spent_charges = EXCLUDED.spent_charges,
@@ -95,6 +96,7 @@ impl SyncService {
                   restorable_charges = EXCLUDED.restorable_charges,
                   amount = EXCLUDED.amount,
                   stake_quantity = EXCLUDED.stake_quantity
+                  WHERE spent_charges <= EXCLUDED.spent_charges
               "#,
               values
           );

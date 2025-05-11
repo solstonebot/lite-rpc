@@ -188,7 +188,7 @@ impl TransactionService {
 
         let statement = format!(
             r#"
-                select * from lite_rpc.StakeInfoAccounts where pubkey = $1
+                SELECT * FROM lite_rpc.StakeInfoAccounts WHERE pubkey = $1
             "#,
         );
 
@@ -217,20 +217,40 @@ impl TransactionService {
                     let now = DateTime::<Local>::from_naive_utc_and_offset(dt.naive_utc(), dt.offset().clone()).timestamp();
                     const DAY_UNIX: i64 = 24 * 60 * 60;
                     let stake_rewards = ((now - stake_info.start_count_date) / DAY_UNIX) * self.global.charges_per_day;
-                    let mut spent_charges = stake_info.spent_charges - stake_info.restorable_charges;
+                    stake_info.spent_charges = stake_info.spent_charges - stake_info.restorable_charges;
                 
                     if stake_info.last_charge_date.is_some() && stake_info.last_charge_date.unwrap() - now < DAY_UNIX {
-                        spent_charges = spent_charges + self.global.restorable_charges;
+                        stake_info.spent_charges = stake_info.spent_charges + self.global.restorable_charges;
                     } else if stake_info.stop_count_date.is_none() {
                         stake_info.last_charge_date = Some(now);
                         stake_info.restorable_charges = stake_info.restorable_charges.checked_add(self.global.restorable_charges).unwrap();
                     }
 
-                    let available_charges = stake_info.saved_charges + stake_rewards - spent_charges;
+                    let available_charges = stake_info.saved_charges + stake_rewards - stake_info.spent_charges;
 
                     if available_charges <= self.global.charges_per_tx {
                         bail!("Insufficient Quote Points: {}, required: {}", available_charges, self.global.charges_per_tx);
                     }
+
+                    let mut args_update: Vec<&(dyn ToSql + Sync)> = Vec::with_capacity(4);
+
+                    args_update.push(&stake_info.spent_charges);
+                    args_update.push(&stake_info.last_charge_date);
+                    args_update.push(&stake_info.restorable_charges);
+                    args_update.push(pubkey);
+
+                    let statement_update = format!(
+                        r#"
+                            UPDATE lite_rpc.StakeInfoAccounts
+                            SET
+                            spent_charges = $1
+                            last_charge_date = $2
+                            restorable_charges = $3
+                            WHERE pubkey = $4
+                        "#,
+                    );
+
+                    self.postgres.execute(&statement_update, &args).await?;
                 }
                 Err(err) => {
                     bail!("DB error {}", err);
