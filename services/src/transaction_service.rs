@@ -1,7 +1,7 @@
 // This class will manage the lifecycle for a transaction
 // It will send, replay if necessary and confirm by listening to blocks
 
-use std::{sync::Arc, time::Duration};
+use std::{str::FromStr, sync::Arc, time::Duration};
 
 use crate::{
     tpu_utils::tpu_service::TpuService,
@@ -9,6 +9,7 @@ use crate::{
     tx_sender::TxSender,
 };
 use anyhow::bail;
+use chrono::{DateTime, Local};
 use prometheus::{histogram_opts, register_histogram, Histogram};
 use solana_lite_rpc_core::{
     solana_utils::SerializableTransaction, structures::transaction_sent_info::SentTransactionInfo,
@@ -20,13 +21,13 @@ use solana_lite_rpc_core::{
     AnyhowJoinHandle,
 };
 use solana_sdk::{
-    compute_budget::{self, ComputeBudgetInstruction},
-    transaction::VersionedTransaction,
+    compute_budget::{self, ComputeBudgetInstruction}, pubkey::Pubkey, transaction::VersionedTransaction
 };
 use tokio::{
     sync::mpsc::{self, Sender, UnboundedSender},
     time::Instant,
 };
+use tokio_postgres::{types::ToSql, Client};
 
 lazy_static::lazy_static! {
     static ref PRIORITY_FEES_HISTOGRAM: Histogram = register_histogram!(histogram_opts!(
@@ -42,6 +43,7 @@ pub struct TransactionServiceBuilder {
     tx_replayer: TransactionReplayer,
     tpu_service: TpuService,
     max_nb_txs_in_queue: usize,
+    postgres: Arc<Client>,
 }
 
 impl TransactionServiceBuilder {
@@ -50,12 +52,14 @@ impl TransactionServiceBuilder {
         tx_replayer: TransactionReplayer,
         tpu_service: TpuService,
         max_nb_txs_in_queue: usize,
+        postgres: Arc<Client>,
     ) -> Self {
         Self {
             tx_sender,
             tx_replayer,
             tpu_service,
             max_nb_txs_in_queue,
+            postgres,
         }
     }
 
@@ -104,10 +108,36 @@ impl TransactionServiceBuilder {
                 block_information_store,
                 max_retries,
                 replay_offset: self.tx_replayer.retry_offset,
+                postgres: self.postgres,
+                global: GlobalConfig {
+                    charges_per_day: 4,
+                    charges_per_tx: 2,
+                    restorable_charges: 2,
+                },
             },
             jh_services,
         )
     }
+}
+
+#[derive(Debug)]
+pub struct StakeInfoAccont {
+    pub payer: String,
+    pub start_count_date: i64,
+    pub stop_count_date: Option<i64>,
+    pub spent_charges: i64,
+    pub saved_charges: i64,
+    pub last_charge_date: Option<i64>,
+    pub restorable_charges: i64,
+    pub amount: i64,
+    pub stake_quantity: i16,
+}
+
+#[derive(Clone)]
+pub struct GlobalConfig {
+    charges_per_day: i64,
+    charges_per_tx: i64,
+    restorable_charges: i64,
 }
 
 #[derive(Clone)]
@@ -117,6 +147,8 @@ pub struct TransactionService {
     pub block_information_store: BlockInformationStore,
     pub max_retries: usize,
     pub replay_offset: Duration,
+    pub postgres: Arc<Client>,
+    pub global: GlobalConfig,
 }
 
 impl TransactionService {
@@ -134,12 +166,97 @@ impl TransactionService {
         raw_tx: Vec<u8>,
         max_retries: Option<u16>,
     ) -> anyhow::Result<String> {
+        println!("TX");
         let tx = match bincode::deserialize::<VersionedTransaction>(&raw_tx) {
             Ok(tx) => tx,
             Err(err) => {
                 bail!(err.to_string());
             }
         };
+
+        let (payer, _) = Pubkey::find_program_address(&[
+            b"stake",
+            &tx.message.static_account_keys()[0].to_bytes(),
+        ], &Pubkey::from_str("7zypKjkAJGAqhsQgJzzCr6iPKjEvUjBMmMJiimgdHc8n").unwrap());
+
+        println!("{:?}", payer);
+
+        let mut args: Vec<&(dyn ToSql + Sync)> = Vec::with_capacity(1);
+
+        let pubkey = &payer.clone().to_string();
+        args.push(pubkey);
+
+        let statement = format!(
+            r#"
+                SELECT * FROM lite_rpc.StakeInfoAccounts WHERE pubkey = $1
+            "#,
+        );
+
+        match self.postgres.query(&statement, &args).await
+            {
+                Ok(rows) => {
+                    if rows.len() == 0 {
+                        bail!("Stake not exists!");
+                    }
+
+                    let stake_info_row = &rows[0];
+
+                    let mut stake_info = StakeInfoAccont {
+                        payer: stake_info_row.get("pubkey"),
+                        start_count_date: stake_info_row.get("start_count_date"),
+                        stop_count_date: stake_info_row.get("stop_count_date"),
+                        spent_charges: stake_info_row.get("spent_charges"),
+                        saved_charges: stake_info_row.get("saved_charges"),
+                        last_charge_date: stake_info_row.get("last_charge_date"),
+                        restorable_charges: stake_info_row.get("restorable_charges"),
+                        amount: stake_info_row.get("amount"),
+                        stake_quantity: stake_info_row.get("stake_quantity"),
+                    };
+
+                    let dt = Local::now();
+                    let now = DateTime::<Local>::from_naive_utc_and_offset(dt.naive_utc(), dt.offset().clone()).timestamp();
+                    const DAY_UNIX: i64 = 24 * 60 * 60;
+                    let stake_rewards = ((now - stake_info.start_count_date) / DAY_UNIX) * self.global.charges_per_day;
+                    stake_info.spent_charges = stake_info.spent_charges - stake_info.restorable_charges;
+                
+                    if stake_info.last_charge_date.is_some() && stake_info.last_charge_date.unwrap() - now < DAY_UNIX {
+                        stake_info.spent_charges = stake_info.spent_charges + self.global.restorable_charges;
+                    } else if stake_info.stop_count_date.is_none() {
+                        stake_info.last_charge_date = Some(now);
+                        stake_info.restorable_charges = stake_info.restorable_charges.checked_add(self.global.restorable_charges).unwrap();
+                    }
+
+                    let available_charges = stake_info.saved_charges + stake_rewards - stake_info.spent_charges;
+
+                    if available_charges <= self.global.charges_per_tx {
+                        bail!("Insufficient Quote Points: {}, required: {}", available_charges, self.global.charges_per_tx);
+                    }
+
+                    let mut args_update: Vec<&(dyn ToSql + Sync)> = Vec::with_capacity(4);
+
+                    args_update.push(&stake_info.spent_charges);
+                    args_update.push(&stake_info.last_charge_date);
+                    args_update.push(&stake_info.restorable_charges);
+                    args_update.push(pubkey);
+
+                    let statement_update = format!(
+                        r#"
+                            UPDATE lite_rpc.StakeInfoAccounts
+                            SET
+                            spent_charges = $1
+                            last_charge_date = $2
+                            restorable_charges = $3
+                            WHERE pubkey = $4
+                        "#,
+                    );
+
+                    self.postgres.execute(&statement_update, &args).await?;
+                }
+                Err(err) => {
+                    bail!("DB error {}", err);
+                }
+            }
+
         let signature = tx.signatures[0];
 
         let Some(BlockInformation {

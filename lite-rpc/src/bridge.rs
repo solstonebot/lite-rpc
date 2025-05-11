@@ -349,6 +349,7 @@ impl LiteRpcServer for LiteBridge {
         tx: String,
         send_transaction_config: Option<RpcSendTransactionConfig>,
     ) -> RpcResult<String> {
+        println!("SEND TX");
         RPC_SEND_TX.inc();
 
         // Copied these constants from solana labs code
@@ -407,7 +408,10 @@ impl LiteRpcServer for LiteBridge {
 
                 Ok(sig)
             }
-            Err(_) => Err(jsonrpsee::types::error::ErrorCode::InternalError.into()),
+            Err(err) => {
+                println!("{:?}", err);
+                return Err(jsonrpsee::types::error::ErrorCode::InternalError.into());
+            },
         }
     }
 

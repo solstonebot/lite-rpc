@@ -40,6 +40,7 @@ chrono = { workspace = true }
 rustls = { workspace = true }
 solana-lite-rpc-core = { workspace = true }
 solana-lite-rpc-util = { workspace = true }
+tokio-postgres = { version = "0.7.8", features = ["with-chrono-0_4"] }
 
 [dev-dependencies]
 tracing = { workspace = true }

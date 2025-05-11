@@ -27,3 +27,15 @@ CREATE TABLE lite_rpc.AccountAddrs (
   id SERIAL PRIMARY KEY,
   addr VARCHAR(45) NOT NULL
 );
+
+CREATE TABLE lite_rpc.StakeInfoAccounts (
+  pubkey VARCHAR(44) NOT NULL PRIMARY KEY,
+  start_count_date BIGINT NOT NULL,
+  stop_count_date BIGINT,
+  spent_charges BIGINT NOT NULL,
+  saved_charges BIGINT NOT NULL,
+  last_charge_date BIGINT,
+  restorable_charges BIGINT NOT NULL,
+  amount BIGINT NOT NULL,
+  stake_quantity SMALLINT NOT NULL
+);

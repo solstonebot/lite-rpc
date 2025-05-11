@@ -1195,6 +1195,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "croner"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38fd53511eaf0b00a185613875fee58b208dfce016577d0ad4bb548e1c4fb3ee"
+dependencies = [
+ "chrono",
+]
+
+[[package]]
 name = "crossbeam-channel"
 version = "0.5.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2912,6 +2921,7 @@ dependencies = [
  "itertools 0.10.5",
  "jemallocator",
  "jsonrpsee",
+ "jsonrpsee-types 0.20.4",
  "lazy_static",
  "log",
  "native-tls",
@@ -2937,6 +2947,7 @@ dependencies = [
  "solana-version",
  "thiserror",
  "tokio",
+ "tokio-cron-scheduler",
  "tokio-postgres",
  "tokio-util",
  "tower 0.4.13",
@@ -5415,6 +5426,7 @@ dependencies = [
  "solana-version",
  "thiserror",
  "tokio",
+ "tokio-postgres",
  "tracing",
  "tracing-subscriber",
 ]
@@ -6744,6 +6756,21 @@ dependencies = [
  "socket2",
  "tokio-macros",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "tokio-cron-scheduler"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c71ce8f810abc9fabebccc30302a952f9e89c6cf246fafaf170fef164063141"
+dependencies = [
+ "chrono",
+ "croner",
+ "num-derive",
+ "num-traits 0.2.19",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
