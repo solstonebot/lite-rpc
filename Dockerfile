@@ -12,6 +12,7 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 FROM base as build
 COPY --from=plan /app/recipe.json recipe.json
+RUN apt-get install -y protobuf-compiler
 RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
 ENV RUSTFLAGS="--cfg tokio_unstable"
@@ -25,4 +26,5 @@ COPY --from=build /app/target/release/lite-rpc /usr/local/bin/
 COPY openssl-legacy.cnf /etc/ssl/openssl-legacy.cnf
 
 ENV OPENSSL_CONF=/etc/ssl/openssl-legacy.cnf
+RUN chmod +x lite-rpc
 CMD lite-rpc
